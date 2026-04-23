@@ -22,7 +22,7 @@ A responsible machine learning pipeline for binary income classification using t
 
 1. **Clone the repository**
    ```bash
-   git clone <repo-url>
+   git clone https://github.com/akritisshetty/census-income-analysis.git
    cd census-income-analysis
    ```
 
