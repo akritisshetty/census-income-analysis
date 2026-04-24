@@ -95,15 +95,15 @@ def fig_to_buf(fig):
 @st.cache_data(show_spinner=False)
 def load_and_prepare(path: str):
     df = pd.read_csv(path)
-    df.replace(" ?", np.nan, inplace=True)
-    df.replace("?", np.nan, inplace=True)
+    # FIX: replace + no inplace (pandas 2.2+ deprecates inplace on these)
+    df = df.replace(" ?", np.nan).replace("?", np.nan)
     # Strip leading/trailing whitespace from string columns (UCI CSV quirk)
     for _c in df.select_dtypes(include="object").columns:
         df[_c] = df[_c].str.strip()
 
     # Feature engineering
     df_proc = df.copy()
-    df_proc.drop(columns=["fnlwgt"], inplace=True)
+    df_proc = df_proc.drop(columns=["fnlwgt"])
     df_proc["capital.net"] = df_proc["capital.gain"] - df_proc["capital.loss"]
     df_proc["work_intensity"] = pd.cut(
         df_proc["hours.per.week"], bins=[0, 29, 45, 99],
@@ -113,11 +113,12 @@ def load_and_prepare(path: str):
     cat_features = df_proc.select_dtypes(include="object").columns.tolist()
     cat_features.remove("income")
     for col in cat_features:
-        df_proc[col].fillna(df_proc[col].mode()[0], inplace=True)
+        # FIX: no inplace fillna
+        df_proc[col] = df_proc[col].fillna(df_proc[col].mode()[0])
 
     sensitive_full = df_proc[["sex", "race"]].copy()
     df_proc["income_bin"] = (df_proc["income"] == ">50K").astype(int)
-    df_proc.drop(columns=["income"], inplace=True)
+    df_proc = df_proc.drop(columns=["income"])
 
     df_encoded = pd.get_dummies(df_proc, drop_first=True).astype(float)
     X = df_encoded.drop(columns=["income_bin"])
@@ -143,14 +144,10 @@ def train_models(X_train, X_test, y_train, y_test, X_train_sc, X_test_sc):
     and injected here so the spinner shown to the user reflects actual training
     progress rather than a cold-start recompute of cross-validation scores."""
 
-    # ── Pre-computed CV AUC arrays (5 folds) seeded from notebook run ────────
-    # These were produced by the identical pipeline (random_state=42, same split)
-    # and are used to populate the CV distribution charts and summary cards
-    # without re-running cross_val_score on every page load.
     PRE_CV = {
-        "Logistic Regression": np.array([0.9054, 0.9068, 0.9059, 0.9072, 0.9055]),  # mean≈0.9062 ±0.0009
-        "Random Forest":       np.array([0.8908, 0.8967, 0.8921, 0.8973, 0.8944]),  # mean≈0.8943 ±0.0026
-        "XGBoost":             np.array([0.9257, 0.9283, 0.9272, 0.9295, 0.9268]),  # mean≈0.9275 ±0.0020
+        "Logistic Regression": np.array([0.9054, 0.9068, 0.9059, 0.9072, 0.9055]),
+        "Random Forest":       np.array([0.8908, 0.8967, 0.8921, 0.8973, 0.8944]),
+        "XGBoost":             np.array([0.9257, 0.9283, 0.9272, 0.9295, 0.9268]),
     }
 
     results = {}
@@ -242,18 +239,18 @@ def compute_fairness(_best_model, _X_train, _X_test, _y_train, _y_test,
     mf_race = MetricFrame(metrics=selection_rate, y_true=_y_test, y_pred=y_pred_opt, sensitive_features=_sens_test["race"])
 
     # Rebuild train/test splits with aligned sensitive features from raw CSV
-    # (same pipeline as notebook section 6 to ensure index consistency)
     df_r = pd.read_csv(data_path)
-    df_r.replace(" ?", np.nan, inplace=True); df_r.replace("?", np.nan, inplace=True)
+    # FIX: no inplace replace/fillna
+    df_r = df_r.replace(" ?", np.nan).replace("?", np.nan)
     for _c in df_r.select_dtypes(include="object").columns:
         df_r[_c] = df_r[_c].str.strip()
     df_r["capital.net"] = df_r["capital.gain"] - df_r["capital.loss"]
     df_r["work_intensity"] = pd.cut(df_r["hours.per.week"], bins=[0, 29, 45, 99],
                                      labels=["Low", "Standard", "Intensive"], right=True)
     df_r["income_bin"] = (df_r["income"] == ">50K").astype(int)
-    df_r.drop(columns=["income", "fnlwgt"], inplace=True)
+    df_r = df_r.drop(columns=["income", "fnlwgt"])
     for c in df_r.select_dtypes(include="object").columns:
-        df_r[c].fillna(df_r[c].mode()[0], inplace=True)
+        df_r[c] = df_r[c].fillna(df_r[c].mode()[0])
     sens_full = df_r[["sex", "race"]].copy()
     X_all2 = pd.get_dummies(df_r.drop(columns=["income_bin"]), drop_first=True).astype(float)
     y_all2 = df_r["income_bin"]
@@ -262,11 +259,11 @@ def compute_fairness(_best_model, _X_train, _X_test, _y_train, _y_test,
     sens_train_sex = sens_full.loc[Xtr2.index, "sex"]
     sens_test_sex  = sens_full.loc[Xte2.index, "sex"]
     sc2 = StandardScaler()
-    Xtr2_sc = sc2.fit_transform(Xtr2); Xte2_sc = sc2.transform(Xte2)
+    Xtr2_sc = sc2.fit_transform(Xtr2)
+    Xte2_sc = sc2.transform(Xte2)
     Xf2 = Xtr2_sc if is_scaled else Xtr2
     Xp2 = Xte2_sc if is_scaled else Xte2
 
-    # Float64ProbWrapper prevents pandas 3.x TypeError with XGBoost float32 output
     wrapped = Float64ProbWrapper(_best_model)
     wrapped.fit(Xf2, ytr2)
     to = ThresholdOptimizer(
@@ -341,7 +338,6 @@ with st.spinner("Loading data..."):
      X_train, X_test, y_train, y_test,
      X_train_sc, X_test_sc, sens_test) = load_and_prepare(DATA_PATH)
 
-# Models are fitted on load; CV scores come from the pre-computed notebook run.
 with st.spinner("Preparing models..."):
     results, best_name = train_models(
         X_train, X_test, y_train, y_test, X_train_sc, X_test_sc
@@ -440,7 +436,6 @@ elif page == "EDA":
         ["Class Distribution", "Numerical Features", "Categorical Features", "Sensitive Attributes"]
     )
 
-    # ── Tab 1: Class Distribution
     with tab1:
         col_a, col_b = st.columns([1, 1.6])
         with col_a:
@@ -453,7 +448,7 @@ elif page == "EDA":
 
         with col_b:
             fig, ax = plt.subplots(figsize=(5, 3.2))
-            bars = counts.plot(kind="bar", ax=ax, color=[PALETTE["<=50K"], PALETTE[">50K"]], edgecolor="white")
+            counts.plot(kind="bar", ax=ax, color=[PALETTE["<=50K"], PALETTE[">50K"]], edgecolor="white")
             ax.set_title("Income Class Distribution", fontsize=12, fontweight="bold")
             ax.set_xlabel(""); ax.set_ylabel("Count")
             ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
@@ -463,7 +458,6 @@ elif page == "EDA":
             plt.tight_layout()
             st.pyplot(fig, use_container_width=False)
 
-    # ── Tab 2: Numerical Features
     with tab2:
         num_cols = ["age", "education.num", "capital.gain", "capital.loss", "hours.per.week", "capital.net"]
         available = [c for c in num_cols if c in df_proc.columns]
@@ -486,13 +480,11 @@ elif page == "EDA":
         st.dataframe(df_raw[[c for c in ["age", "education.num", "capital.gain", "capital.loss", "hours.per.week"]
                                if c in df_raw.columns]].describe().round(2), use_container_width=True)
 
-    # ── Tab 3: Categorical Features
     with tab3:
         cat_opts = ["workclass", "education", "occupation", "marital.status", "native.country"]
         cat_available = [c for c in cat_opts if c in df_raw.columns]
         chosen = st.selectbox("Select feature", cat_available)
         df_cat = df_raw.copy()
-        df_cat["income"] = df_raw["income"]
         order = df_cat[chosen].value_counts().index
         fig, ax = plt.subplots(figsize=(10, 4.5))
         sns.countplot(data=df_cat, y=chosen, hue="income", order=order, palette=PALETTE, ax=ax)
@@ -502,7 +494,6 @@ elif page == "EDA":
         plt.tight_layout()
         st.pyplot(fig, use_container_width=True)
 
-    # ── Tab 4: Sensitive Attributes
     with tab4:
         st.markdown("Baseline income rates across protected attributes — the fairness audit in Section 5 will build on these.")
         fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
@@ -533,7 +524,6 @@ elif page == "Model Comparison":
     st.title("Model Comparison")
     st.markdown(f"Best model by 5-fold CV ROC-AUC: **{best_name}**")
 
-    # ── Pre-computed notebook results (hardcoded from executed notebook) ──────
     st.subheader("Notebook Results (Pre-Computed)")
     notebook_results = pd.DataFrame([
         {"Model": "Logistic Regression", "CV ROC-AUC": "0.9062 ± 0.0009", "Test ROC-AUC": "0.9037", "F1 >50K (t=0.5)": "0.66", "Precision": "0.74", "Recall": "0.60"},
@@ -545,7 +535,6 @@ elif page == "Model Comparison":
     st.markdown("---")
     st.subheader("Live Metrics (Fitted Models)")
 
-    # Metrics table
     rows = []
     for name, res in results.items():
         y_pred_05 = (res["prob"] >= 0.5).astype(int)
@@ -560,7 +549,6 @@ elif page == "Model Comparison":
     st.dataframe(pd.DataFrame(rows).set_index("Model"), use_container_width=True)
 
     col1, col2 = st.columns(2)
-    # ROC curves
     with col1:
         fig, ax = plt.subplots(figsize=(6, 4.5))
         for name, res in results.items():
@@ -574,7 +562,6 @@ elif page == "Model Comparison":
         plt.tight_layout()
         st.pyplot(fig, use_container_width=True)
 
-    # Confusion matrix for best model
     with col2:
         y_pred_best = (best_prob >= 0.5).astype(int)
         cm = confusion_matrix(y_test, y_pred_best)
@@ -586,7 +573,6 @@ elif page == "Model Comparison":
         plt.tight_layout()
         st.pyplot(fig, use_container_width=True)
 
-    # CV AUC distribution
     st.subheader("Cross-Validation AUC Distribution")
     fig, ax = plt.subplots(figsize=(8, 3.5))
     for i, (name, res) in enumerate(results.items()):
@@ -598,7 +584,6 @@ elif page == "Model Comparison":
     plt.tight_layout()
     st.pyplot(fig, use_container_width=True)
 
-    # Classification reports
     st.subheader("Classification Reports (threshold = 0.5)")
     for name, res in results.items():
         with st.expander(name):
@@ -657,7 +642,6 @@ weighted avg       0.87      0.87      0.87      6,513""", language="text")
 elif page == "Fairness Audit":
     st.title("Fairness Audit")
 
-    # ── Pre-computed notebook results (shown instantly) ───────────────────────
     st.subheader("Pre-Computed Results (from Notebook Run)")
     nb_fairness = pd.DataFrame([
         {"Attribute": "Sex",  "Metric": "Demographic Parity Difference", "Pre-Mitigation": 0.2117, "Post-Mitigation": 0.1206, "Reduction": "-43.0%"},
@@ -682,7 +666,6 @@ elif page == "Fairness Audit":
         "financial services regulation."
     )
 
-    # Pre/post comparison table
     st.subheader("Pre vs Post-Mitigation Summary (Sex)")
     summary_df = pd.DataFrame({
         "Metric": ["Demographic Parity Difference", "Equalized Odds Difference"],
@@ -769,7 +752,6 @@ elif page == "SHAP Explainability":
     tab1, tab2, tab3, tab4 = st.tabs(["Beeswarm", "Bar Chart", "Waterfall", "Dependence"])
 
     with tab1:
-        fig, ax = plt.subplots(figsize=(9, 6))
         shap.plots.beeswarm(sv, max_display=15, show=False)
         plt.title("SHAP Beeswarm — Top 15 Features", fontsize=12, fontweight="bold")
         plt.tight_layout()
@@ -936,7 +918,9 @@ elif page == "Predictor":
                 "native.country": native_country, "work_intensity": work_intensity,
             }
             input_df = pd.DataFrame([input_dict])
-            input_encoded = pd.get_dummies(input_df, drop_first=True).reindex(columns=X_test.columns, fill_value=0).astype(float)
+            input_encoded = pd.get_dummies(input_df, drop_first=True).reindex(
+                columns=X_test.columns, fill_value=0
+            ).astype(float)
 
             model_obj = best["model"]
             prob = model_obj.predict_proba(input_encoded)[0][1]
@@ -948,7 +932,6 @@ elif page == "Predictor":
         with c2: metric_card("Probability (>50K)", f"{prob:.1%}")
         with c3: metric_card("Threshold Applied", f"{best_t:.2f}")
 
-        # SHAP waterfall for this individual
         st.subheader("Explanation")
         with st.spinner("Computing SHAP explanation..."):
             sv_bg, _ = compute_shap(model_obj, X_test)
